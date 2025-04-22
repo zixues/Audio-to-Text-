@@ -1,51 +1,66 @@
-from flask import Flask, request, jsonify, send_file
-from gtts import gTTS
-from docx import Document
-import os
+from flask import Flask, request, jsonify
+import requests
 import tempfile
 import logging
+import os
+
+from dotenv import load_dotenv
+load_dotenv()
 
 app = Flask(__name__)
+
+    
 logging.basicConfig(level=logging.DEBUG)
 
-def extract_text_from_docx(file_path):
-    """Extract text from a DOCX file."""
-    try:
-        doc = Document(file_path)
-        full_text = "\n".join([para.text for para in doc.paragraphs])
-        return full_text
-    except Exception as e:
-        logging.error(f"Error reading DOCX file: {e}")
-        return None
+    
+WHISPER_API_ENDPOINT = "https://api.groq.com/openai/v1/audio/transcriptions"
+WHISPER_API_KEY = os.getenv("GROQ_API")
 
-@app.route("/docx-to-audio", methods=["POST"])
-def docx_to_audio():
-    if "file" not in request.files:
-        return jsonify({"error": "No file uploaded"}), 400
-    
-    uploaded_file = request.files["file"]
-    
-    if not uploaded_file.filename.endswith(".docx"):
-        return jsonify({"error": "Invalid file format. Please upload a DOCX file."}), 400
-    
-    # Save uploaded file temporarily
-    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".docx")
-    uploaded_file.save(temp_file.name)
-    temp_file.close()
-    
-    # Extract text from DOCX
-    text = extract_text_from_docx(temp_file.name)
-    os.unlink(temp_file.name)  # Remove temporary file
-    
-    if not text:
-        return jsonify({"error": "Failed to extract text from DOCX"}), 500
-    
-    # Convert text to speech using gTTS
-    tts = gTTS(text)
-    audio_file = "output.mp3"
-    tts.save(audio_file)
-    
-    return send_file(audio_file, as_attachment=True)
+@app.route("/testing", methods=["GET"])
+def test():
+    return "This is working"
+
+@app.route("/transcribe", methods=["POST"])
+def transcribe_audio():
+    try:
+        if "file" in request.files:
+            temp_file = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
+            temp_file.write(request.files["file"].read())  
+            temp_file.close()
+            return jsonify({"transcription": process_audio(file_path=temp_file.name)})
+        else:
+            return jsonify({"error": "Invalid input. Provide an audio file."}), 400
+    except Exception as e:
+        logging.error(f"Error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+def process_audio(file_path=None):
+    """Process an audio file (local) and return transcription."""
+    try:
+            
+        headers = {"Authorization": f"Bearer {WHISPER_API_KEY}"}
+            
+            
+        with open(file_path, "rb") as audio_file:
+            files = {"file": (os.path.basename(file_path), audio_file, "audio/mpeg")}
+            data = {"model": "whisper-large-v3", "response_format": "verbose_json", "language": "en"}
+
+            response = requests.post(WHISPER_API_ENDPOINT, headers=headers, files=files, data=data)
+
+        if response.status_code != 200:
+            logging.error(f"Whisper API error: {response.text}")
+            os.unlink(file_path)
+            return {"error": "Failed to get transcription", "details": response.text}
+
+        transcription = response.json().get("text", "")  
+
+        os.unlink(file_path)  
+
+        return transcription  
+
+    except Exception as e:
+        logging.error(f"Error: {e}")
+        return {"error": str(e)}
 
 if __name__ == "__main__":
     app.run(debug=True)
